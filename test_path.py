@@ -2,25 +2,19 @@
 
 """ test_path.py - Test the path module.
 
-This only runs on Posix and NT right now.  I would like to have more
+This only runs on Posix and Windows right now.  I would like to have more
 tests.  You can help!  Just add appropriate pathnames for your
 platform (os.name) in each place where the p() function is called.
 Then send me the result.  If you can't get the test to run at all on
-your platform, there's probably a bug in path.py -- please let me
-know!
+your platform, there's probably a bug in path.py -- please report the issue
+in the issue tracker at https://github.com/jaraco/path.py.
 
 TempDirTestCase.testTouch() takes a while to run.  It sleeps a few
 seconds to allow some time to pass between calls to check the modify
 time on files.
-
-Authors:
- Jason Orendorff <jason.orendorff\x40gmail\x2ecom>
- Marc Abramowitz <msabramo\x40gmail\x2ecom>
- Others - unfortunately attribution is lost
-
 """
 
-from __future__ import with_statement  # Needed for Python 2.5
+from __future__ import with_statement
 
 import unittest
 import codecs
@@ -33,7 +27,6 @@ import time
 import ntpath
 import posixpath
 import textwrap
-import platform
 
 import pytest
 
@@ -377,6 +370,33 @@ class ScratchDirTestCase(unittest.TestCase):
                 except:
                     pass
 
+    def test_listdir_other_encoding(self):
+        """
+        Some filesystems allow non-character sequences in path names.
+        ``.listdir`` should still function in this case.
+        See issue #61 for details.
+        """
+        self.assertEqual(path(self.tempdir).listdir(), [])
+        tmpdir_bytes = self.tempdir
+
+        filename = 'r\xe9\xf1emi'
+        PY3 = sys.version_info[0] >= 3
+        if PY3:
+            filename = filename.encode('latin-1')
+            tmpdir_bytes = tmpdir_bytes.encode('ascii')
+        pathname = os.path.join(tmpdir_bytes, filename)
+        with open(pathname, 'wb'):
+            pass
+        # first demonstrate that os.listdir works
+        self.assert_(os.listdir(tmpdir_bytes))
+
+        # now try with path.py
+        results = path(self.tempdir).listdir()
+        self.assert_(len(results) == 1)
+        res, = results
+        self.assert_(isinstance(res, path))
+        assert len(res.basename()) == len(filename)
+
     def testMakeDirs(self):
         d = path(self.tempdir)
 
@@ -653,6 +673,8 @@ class ScratchDirTestCase(unittest.TestCase):
 
         self.assertEqual(i, len(txt) / size - 1)
 
+    @pytest.mark.skipif(not hasattr(os.path, 'samefile'),
+        reason="samefile not present")
     def testSameFile(self):
         f1 = (tempdir() / '1.txt').touch()
         f1.write_text('foo')
@@ -922,4 +944,4 @@ class TestInPlace(object):
         assert 'lazy dog' in data
 
 if __name__ == '__main__':
-    unittest.main()
+    pytest.main()

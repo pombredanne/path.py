@@ -20,20 +20,10 @@
 # SOFTWARE.
 #
 
-""" path.py - An object representing a path to a file or directory.
+"""
+path.py - An object representing a path to a file or directory.
 
-Original author:
- Jason Orendorff <jason.orendorff\x40gmail\x2ecom>
-
-Current maintainer:
- Jason R. Coombs <jaraco@jaraco.com>
-
-Contributors:
- Mikhail Gusarov <dottedmag@dottedmag.net>
- Marc Abramowitz <marc@marc-abramowitz.com>
- Jason R. Coombs <jaraco@jaraco.com>
- Jason Chu <jchu@xentac.net>
- Vojislav Stojkovic <vstojkovic@syntertainment.com>
+https://github.com/jaraco/path.py
 
 Example::
 
@@ -89,12 +79,13 @@ try:
 except AttributeError:
     getcwdu = os.getcwd
 
-if sys.version < '3':
-    def u(x):
-        return codecs.unicode_escape_decode(x)[0]
-else:
+PY3 = sys.version_info[0] >= 3
+if PY3:
     def u(x):
         return x
+else:
+    def u(x):
+        return codecs.unicode_escape_decode(x)[0]
 
 o777 = 511
 o766 = 502
@@ -109,6 +100,23 @@ try:
 except ImportError:
     pass
 ##########################
+
+##############################################################
+# Support for surrogateescape
+
+def surrogate_escape(error):
+    """
+    Simulate the Python 3 surrogateescape handler, but for Python 2 only.
+    """
+    chars = error.object[error.start:error.end]
+    assert len(chars) == 1
+    val = ord(chars)
+    val += 0xdc00
+    return unichr(val), error.end
+
+if not PY3:
+    codecs.register_error('surrogateescape', surrogate_escape)
+###############################################################
 
 __version__ = '5.2'
 __all__ = ['path', 'CaseInsensitivePattern']
@@ -185,6 +193,16 @@ class path(unicode):
         What class should be used to construct new instances from this class
         """
         return cls
+
+    @classmethod
+    def _always_unicode(cls, path):
+        """
+        Ensure the path as retrieved from a Python API, such as os.listdir,
+        is a proper Unicode string.
+        """
+        if PY3 or isinstance(path, unicode):
+            return path
+        return path.decode(sys.getfilesystemencoding(), 'surrogateescape')
 
     # --- Special Python methods.
 
@@ -481,7 +499,7 @@ class path(unicode):
             pattern = '*'
         return [
             self / child
-            for child in os.listdir(self)
+            for child in map(self._always_unicode, os.listdir(self))
             if self._next_class(child).fnmatch(pattern)
         ]
 
