@@ -1,6 +1,52 @@
 Changes
 =======
 
+7.2
+---
+
+ - In chmod, added support for multiple symbolic masks (separated by commas).
+ - In chmod, fixed issue in setting of symbolic mask with '=' where
+   unreferenced permissions were cleared.
+
+7.1
+---
+
+ - #23: Added support for symbolic masks to ``.chmod``.
+
+7.0
+---
+
+ - The ``open`` method now uses ``io.open`` and supports all of the
+   parameters to that function. ``open`` will always raise an ``OSError``
+   on failure, even on Python 2.
+ - Updated ``write_text`` to support additional newline patterns.
+ - The ``text`` method now always returns text (never bytes), and thus
+   requires an encoding parameter be supplied if the default encoding is not
+   sufficient to decode the content of the file.
+
+6.2
+---
+
+ - ``path`` class renamed to ``Path``. The ``path`` name remains as an alias
+   for compatibility.
+
+6.1
+---
+
+ - ``chown`` now accepts names in addition to numeric IDs.
+
+6.0
+---
+
+ - Drop support for Python 2.5. Python 2.6 or later required.
+ - Installation now requires setuptools.
+
+5.3
+---
+
+ - Allow arbitrary callables to be passed to path.walk ``errors`` parameter.
+   Enables workaround for issues such as #73 and #56.
+
 5.2
 ---
 

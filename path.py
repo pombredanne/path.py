@@ -27,15 +27,11 @@ https://github.com/jaraco/path.py
 
 Example::
 
-    from path import path
-    d = path('/home/guido/bin')
+    from path import Path
+    d = Path('/home/guido/bin')
     for f in d.files('*.py'):
-        f.chmod(0755)
-
-path.py requires Python 2.5 or later.
+        f.chmod(0o755)
 """
-
-from __future__ import with_statement
 
 import sys
 import warnings
@@ -51,6 +47,7 @@ import functools
 import operator
 import re
 import contextlib
+import io
 
 try:
     import win32security
@@ -62,47 +59,20 @@ try:
 except ImportError:
     pass
 
-################################
-# Monkey patchy python 3 support
 try:
-    basestring
-except NameError:
-    basestring = str
-
-try:
-    unicode
-except NameError:
-    unicode = str
-
-try:
-    getcwdu = os.getcwdu
-except AttributeError:
-    getcwdu = os.getcwd
-
-PY3 = sys.version_info[0] >= 3
-if PY3:
-    def u(x):
-        return x
-else:
-    def u(x):
-        return codecs.unicode_escape_decode(x)[0]
-
-o777 = 511
-o766 = 502
-o666 = 438
-o554 = 364
-################################
-
-##########################
-# Python 2.5 compatibility
-try:
-    from functools import reduce
+    import grp
 except ImportError:
     pass
-##########################
 
-##############################################################
-# Support for surrogateescape
+##############################################################################
+# Python 2/3 support
+PY3 = sys.version_info >= (3,)
+PY2 = not PY3
+
+string_types = str,
+text_type = str
+getcwdu = os.getcwd
+u = lambda x: x
 
 def surrogate_escape(error):
     """
@@ -112,14 +82,39 @@ def surrogate_escape(error):
     assert len(chars) == 1
     val = ord(chars)
     val += 0xdc00
-    return unichr(val), error.end
+    return __builtin__.unichr(val), error.end
 
-if not PY3:
+if PY2:
+    import __builtin__
+    string_types = __builtin__.basestring,
+    text_type = __builtin__.unicode
+    getcwdu = os.getcwdu
+    u = lambda x: codecs.unicode_escape_decode(x)[0]
     codecs.register_error('surrogateescape', surrogate_escape)
-###############################################################
 
-__version__ = '5.3'
-__all__ = ['path', 'CaseInsensitivePattern']
+@contextlib.contextmanager
+def io_error_compat():
+    try:
+        yield
+    except IOError as io_err:
+        # On Python 2, io.open raises IOError; transform to OSError for
+        # future compatibility.
+        os_err = OSError(*io_err.args)
+        os_err.filename = getattr(io_err, 'filename', None)
+        raise os_err
+
+##############################################################################
+
+__version__ = '7.3'
+__all__ = ['Path', 'path', 'CaseInsensitivePattern']
+
+
+LINESEPS = [u('\r\n'), u('\r'), u('\n')]
+U_LINESEPS = LINESEPS + [u('\u0085'), u('\u2028'), u('\u2029')]
+NEWLINE = re.compile('|'.join(LINESEPS))
+U_NEWLINE = re.compile('|'.join(U_LINESEPS))
+NL_END = re.compile(u(r'(?:{0})$').format(NEWLINE.pattern))
+U_NL_END = re.compile(u(r'(?:{0})$').format(U_NEWLINE.pattern))
 
 
 class TreeWalkWarning(Warning):
@@ -161,7 +156,16 @@ class multimethod(object):
         )
 
 
-class path(unicode):
+def alias(name):
+    "Create a decorator which will make an alias of the decorated item"
+    def decorate(item):
+        globals()[name] = item
+        return item
+    return decorate
+
+
+@alias('path')
+class Path(text_type):
     """ Represents a filesystem path.
 
     For documentation on individual methods, consult their
@@ -200,28 +204,28 @@ class path(unicode):
         Ensure the path as retrieved from a Python API, such as :func:`os.listdir`,
         is a proper Unicode string.
         """
-        if PY3 or isinstance(path, unicode):
+        if PY3 or isinstance(path, text_type):
             return path
         return path.decode(sys.getfilesystemencoding(), 'surrogateescape')
 
     # --- Special Python methods.
 
     def __repr__(self):
-        return '%s(%s)' % (type(self).__name__, super(path, self).__repr__())
+        return '%s(%s)' % (type(self).__name__, super(Path, self).__repr__())
 
-    # Adding a path and a string yields a path.
+    # Adding a Path and a string yields a Path.
     def __add__(self, more):
         try:
-            return self._next_class(super(path, self).__add__(more))
+            return self._next_class(super(Path, self).__add__(more))
         except TypeError:  # Python bug
             return NotImplemented
 
     def __radd__(self, other):
-        if not isinstance(other, basestring):
+        if not isinstance(other, string_types):
             return NotImplemented
         return self._next_class(other.__add__(self))
 
-    # The / operator joins paths.
+    # The / operator joins Paths.
     def __div__(self, rel):
         """ fp.__div__(rel) == fp / rel == fp.joinpath(rel)
 
@@ -252,7 +256,7 @@ class path(unicode):
         return cls(getcwdu())
 
     #
-    # --- Operations on path strings.
+    # --- Operations on Path strings.
 
     def abspath(self):
         """ .. seealso:: :func:`os.path.abspath` """
@@ -300,9 +304,9 @@ class path(unicode):
         """ The same as :meth:`name`, but with one file extension stripped off.
 
         For example,
-        ``path('/home/guido/python.tar.gz').name == 'python.tar.gz'``,
+        ``Path('/home/guido/python.tar.gz').name == 'python.tar.gz'``,
         but
-        ``path('/home/guido/python.tar.gz').namebase == 'python.tar'``.
+        ``Path('/home/guido/python.tar.gz').namebase == 'python.tar'``.
         """
         base, ext = self.module.splitext(self.name)
         return base
@@ -324,11 +328,11 @@ class path(unicode):
 
     parent = property(
         dirname, None, None,
-        """ This path's parent directory, as a new path object.
+        """ This path's parent directory, as a new Path object.
 
         For example,
-        ``path('/usr/local/lib/libpython.so').parent ==
-        path('/usr/local/lib')``
+        ``Path('/usr/local/lib/libpython.so').parent ==
+        Path('/usr/local/lib')``
 
         .. seealso:: :meth:`dirname`, :func:`os.path.dirname`
         """)
@@ -338,7 +342,7 @@ class path(unicode):
         """ The name of this file or directory without the full path.
 
         For example,
-        ``path('/usr/local/lib/libpython.so').name == 'libpython.so'``
+        ``Path('/usr/local/lib/libpython.so').name == 'libpython.so'``
 
         .. seealso:: :meth:`basename`, :func:`os.path.basename`
         """)
@@ -356,7 +360,7 @@ class path(unicode):
 
         Split the drive specifier from this path.  If there is
         no drive specifier, :samp:`{p.drive}` is empty, so the return value
-        is simply ``(path(''), p)``.  This is always the case on Unix.
+        is simply ``(Path(''), p)``.  This is always the case on Unix.
 
         .. seealso:: :func:`os.path.splitdrive`
         """
@@ -381,8 +385,8 @@ class path(unicode):
     def stripext(self):
         """ p.stripext() -> Remove one file extension from the path.
 
-        For example, ``path('/home/guido/python.tar.gz').stripext()``
-        returns ``path('/home/guido/python.tar')``.
+        For example, ``Path('/home/guido/python.tar.gz').stripext()``
+        returns ``Path('/home/guido/python.tar')``.
         """
         return self.splitext()[0]
 
@@ -403,7 +407,7 @@ class path(unicode):
     @multimethod
     def joinpath(cls, first, *others):
         """
-        Join first to zero or more :class:`path` components, adding a separator
+        Join first to zero or more :class:`Path` components, adding a separator
         character (:samp:`{first}.module.sep`) if needed.  Returns a new instance of
         :samp:`{first}._next_class`.
 
@@ -416,12 +420,12 @@ class path(unicode):
     def splitall(self):
         r""" Return a list of the path components in this path.
 
-        The first item in the list will be a path.  Its value will be
+        The first item in the list will be a Path.  Its value will be
         either :data:`os.curdir`, :data:`os.pardir`, empty, or the root
         directory of this path (for example, ``'/'`` or ``'C:\\'``).  The
         other items in the list will be strings.
 
-        ``path.path.joinpath(*result)`` will yield the original path.
+        ``path.Path.joinpath(*result)`` will yield the original path.
         """
         parts = []
         loc = self
@@ -488,7 +492,7 @@ class path(unicode):
         Use :meth:`files` or :meth:`dirs` instead if you want a listing
         of just files or just subdirectories.
 
-        The elements of the list are path objects.
+        The elements of the list are Path objects.
 
         With the optional `pattern` argument, this only lists
         items whose names match the given pattern.
@@ -506,7 +510,7 @@ class path(unicode):
     def dirs(self, pattern=None):
         """ D.dirs() -> List of this directory's subdirectories.
 
-        The elements of the list are path objects.
+        The elements of the list are Path objects.
         This does not walk recursively into subdirectories
         (but see :meth:`walkdirs`).
 
@@ -519,7 +523,7 @@ class path(unicode):
     def files(self, pattern=None):
         """ D.files() -> List of the files in this directory.
 
-        The elements of the list are path objects.
+        The elements of the list are Path objects.
         This does not walk into subdirectories (see :meth:`walkfiles`).
 
         With the optional `pattern` argument, this only lists files
@@ -532,7 +536,7 @@ class path(unicode):
     def walk(self, pattern=None, errors='strict'):
         """ D.walk() -> iterator over files and subdirs, recursively.
 
-        The iterator yields path objects naming each child item of
+        The iterator yields Path objects naming each child item of
         this directory and its descendants.  This requires that
         ``D.isdir()``.
 
@@ -541,25 +545,32 @@ class path(unicode):
 
         The `errors=` keyword argument controls behavior when an
         error occurs.  The default is ``'strict'``, which causes an
-        exception.  The other allowed values are ``'warn'`` (which
+        exception.  Other allowed values are ``'warn'`` (which
         reports the error via :func:`warnings.warn()`), and ``'ignore'``.
+        `errors` may also be an arbitrary callable taking a msg parameter.
         """
-        if errors not in ('strict', 'warn', 'ignore'):
+        class Handlers:
+            def strict(msg):
+                raise
+
+            def warn(msg):
+                warnings.warn(msg, TreeWalkWarning)
+
+            def ignore(msg):
+                pass
+
+        if not callable(errors) and errors not in vars(Handlers):
             raise ValueError("invalid errors parameter")
+        errors = vars(Handlers).get(errors, errors)
 
         try:
             childList = self.listdir()
         except Exception:
-            if errors == 'ignore':
-                return
-            elif errors == 'warn':
-                warnings.warn(
-                    "Unable to list directory '%s': %s"
-                    % (self, sys.exc_info()[1]),
-                    TreeWalkWarning)
-                return
-            else:
-                raise
+            exc = sys.exc_info()[1]
+            tmpl = "Unable to list directory '%(self)s': %(exc)s"
+            msg = tmpl % locals()
+            errors(msg)
+            return
 
         for child in childList:
             if pattern is None or child.fnmatch(pattern):
@@ -567,16 +578,11 @@ class path(unicode):
             try:
                 isdir = child.isdir()
             except Exception:
-                if errors == 'ignore':
-                    isdir = False
-                elif errors == 'warn':
-                    warnings.warn(
-                        "Unable to access '%s': %s"
-                        % (child, sys.exc_info()[1]),
-                        TreeWalkWarning)
-                    isdir = False
-                else:
-                    raise
+                exc = sys.exc_info()[1]
+                tmpl = "Unable to access '%(child)s': %(exc)s"
+                msg = tmpl % locals()
+                errors(msg)
+                isdir = False
 
             if isdir:
                 for item in child.walk(pattern, errors):
@@ -686,11 +692,11 @@ class path(unicode):
         return fnmatch.fnmatchcase(name, pattern)
 
     def glob(self, pattern):
-        """ Return a list of path objects that match the pattern.
+        """ Return a list of Path objects that match the pattern.
 
         `pattern` - a path relative to this directory, with wildcards.
 
-        For example, ``path('/users').glob('*/bin/*')`` returns a list
+        For example, ``Path('/users').glob('*/bin/*')`` returns a list
         of all the files users have in their :file:`bin` directories.
 
         .. seealso:: :func:`glob.glob`
@@ -702,11 +708,13 @@ class path(unicode):
     # --- Reading or writing an entire file at once.
 
     def open(self, *args, **kwargs):
-        """ Open this file.  Return a :class:`file` object.
+        """ Open this file and return a corresponding :class:`file` object.
 
-        .. seealso:: :func:`python:open`
+        Keyword arguments work as in :func:`io.open`.  If the file cannot be
+        opened, an :class:`~exceptions.OSError` is raised.
         """
-        return open(self, *args, **kwargs)
+        with io_error_compat():
+            return io.open(self, *args, **kwargs)
 
     def bytes(self):
         """ Open this file, read all bytes, return them as a string. """
@@ -717,17 +725,17 @@ class path(unicode):
         """ Returns a generator yielding chunks of the file, so it can
             be read piece by piece with a simple for loop.
 
-           Any argument you pass after `size` will be passed to `open()`.
+           Any argument you pass after `size` will be passed to :meth:`open`.
 
            :example:
 
                >>> hash = hashlib.md5()
-               >>> for chunk in path("path.py").chunks(8192, mode='rb'):
+               >>> for chunk in Path("path.py").chunks(8192, mode='rb'):
                ...     hash.update(chunk)
 
             This will read the file by chunks of 8192 bytes.
         """
-        with open(self, *args, **kwargs) as f:
+        with self.open(*args, **kwargs) as f:
             while True:
                 d = f.read(size)
                 if not d:
@@ -750,34 +758,13 @@ class path(unicode):
     def text(self, encoding=None, errors='strict'):
         r""" Open this file, read it in, return the content as a string.
 
-        This method uses ``'U'`` mode, so ``'\r\n'`` and ``'\r'`` are
-        automatically translated to ``'\n'``.
-
-        Optional arguments:
-            `encoding` - The Unicode encoding (or character set) of
-                the file.  If present, the content of the file is
-                decoded and returned as a unicode object; otherwise
-                it is returned as an 8-bit str.
-            `errors` - How to handle Unicode errors; see :meth:`str.decode`
-                for the options.  Default is 'strict'.
+        All newline sequences are converted to ``'\n'``.  Keyword arguments
+        will be passed to :meth:`open`.
 
         .. seealso:: :meth:`lines`
         """
-        if encoding is None:
-            # 8-bit
-            with self.open('U') as f:
-                return f.read()
-        else:
-            # Unicode
-            with codecs.open(self, 'r', encoding, errors) as f:
-                # (Note - Can't use 'U' mode here, since codecs.open
-                # doesn't support 'U' mode.)
-                t = f.read()
-            return (t.replace(u('\r\n'), u('\n'))
-                     .replace(u('\r\x85'), u('\n'))
-                     .replace(u('\r'), u('\n'))
-                     .replace(u('\x85'), u('\n'))
-                     .replace(u('\u2028'), u('\n')))
+        with self.open(mode='r', encoding=encoding, errors=errors) as f:
+            return U_NEWLINE.sub('\n', f.read())
 
     def write_text(self, text, encoding=None, errors='strict',
                    linesep=os.linesep, append=False):
@@ -844,30 +831,14 @@ class path(unicode):
         conversion.
 
         """
-        if isinstance(text, unicode):
+        if isinstance(text, text_type):
             if linesep is not None:
-                # Convert all standard end-of-line sequences to
-                # ordinary newline characters.
-                text = (text.replace(u('\r\n'), u('\n'))
-                            .replace(u('\r\x85'), u('\n'))
-                            .replace(u('\r'), u('\n'))
-                            .replace(u('\x85'), u('\n'))
-                            .replace(u('\u2028'), u('\n')))
-                text = text.replace(u('\n'), linesep)
-            if encoding is None:
-                encoding = sys.getdefaultencoding()
-            bytes = text.encode(encoding, errors)
+                text = U_NEWLINE.sub(linesep, text)
+            text = text.encode(encoding or sys.getdefaultencoding(), errors)
         else:
-            # It is an error to specify an encoding if 'text' is
-            # an 8-bit string.
             assert encoding is None
-
-            if linesep is not None:
-                text = (text.replace('\r\n', '\n')
-                            .replace('\r', '\n'))
-                bytes = text.replace('\n', linesep)
-
-        self.write_bytes(bytes, append)
+            text = NEWLINE.sub(linesep, text)
+        self.write_bytes(text, append=append)
 
     def lines(self, encoding=None, errors='strict', retain=True):
         r""" Open this file, read all lines, return them in a list.
@@ -922,43 +893,25 @@ class path(unicode):
                 :meth:`file.writelines`.
 
         Use the keyword argument ``append=True`` to append lines to the
-        file.  The default is to overwrite the file.  
-        
+        file.  The default is to overwrite the file.
+
         .. warning ::
-        
+
             When you use this with Unicode data, if the encoding of the
             existing data in the file is different from the encoding
             you specify with the `encoding=` parameter, the result is
             mixed-encoding data, which can really confuse someone trying
             to read the file later.
         """
-        if append:
-            mode = 'ab'
-        else:
-            mode = 'wb'
-        with self.open(mode) as f:
-            for line in lines:
-                isUnicode = isinstance(line, unicode)
+        with self.open('ab' if append else 'wb') as f:
+            for l in lines:
+                isUnicode = isinstance(l, text_type)
                 if linesep is not None:
-                    # Strip off any existing line-end and add the
-                    # specified linesep string.
-                    if isUnicode:
-                        if line[-2:] in (u('\r\n'), u('\x0d\x85')):
-                            line = line[:-2]
-                        elif line[-1:] in (u('\r'), u('\n'),
-                                           u('\x85'), u('\u2028')):
-                            line = line[:-1]
-                    else:
-                        if line[-2:] == '\r\n':
-                            line = line[:-2]
-                        elif line[-1:] in ('\r', '\n'):
-                            line = line[:-1]
-                    line += linesep
+                    pattern = U_NL_END if isUnicode else NL_END
+                    l = pattern.sub('', l) + linesep
                 if isUnicode:
-                    if encoding is None:
-                        encoding = sys.getdefaultencoding()
-                    line = line.encode(encoding, errors)
-                f.write(line)
+                    l = l.encode(encoding or sys.getdefaultencoding(), errors)
+                f.write(l)
 
     def read_md5(self):
         """ Calculate the md5 hash for this file.
@@ -1168,13 +1121,25 @@ class path(unicode):
         return self
 
     def chmod(self, mode):
-        """ .. seealso:: :func:`os.chmod` """
+        """
+        Set the mode. May be the new mode (os.chmod behavior) or a `symbolic
+        mode <http://en.wikipedia.org/wiki/Chmod#Symbolic_modes>`_.
+
+        .. seealso:: :func:`os.chmod`
+        """
+        if isinstance(mode, string_types):
+            mask = _multi_permission_mask(mode)
+            mode = mask(self.stat().st_mode)
         os.chmod(self, mode)
         return self
 
     if hasattr(os, 'chown'):
         def chown(self, uid=-1, gid=-1):
             """ .. seealso:: :func:`os.chown` """
+            if 'pwd' in globals() and isinstance(uid, string_types):
+                uid = pwd.getpwnam(uid).pw_uid
+            if 'grp' in globals() and isinstance(gid, string_types):
+                gid = grp.getgrnam(gid).gr_gid
             os.chown(self, uid, gid)
             return self
 
@@ -1191,12 +1156,12 @@ class path(unicode):
     #
     # --- Create/delete operations on directories
 
-    def mkdir(self, mode=o777):
+    def mkdir(self, mode=0o777):
         """ .. seealso:: :func:`os.mkdir` """
         os.mkdir(self, mode)
         return self
 
-    def mkdir_p(self, mode=o777):
+    def mkdir_p(self, mode=0o777):
         """ Like :meth:`mkdir`, but does not raise an exception if the
         directory already exists. """
         try:
@@ -1207,12 +1172,12 @@ class path(unicode):
                 raise
         return self
 
-    def makedirs(self, mode=o777):
+    def makedirs(self, mode=0o777):
         """ .. seealso:: :func:`os.makedirs` """
         os.makedirs(self, mode)
         return self
 
-    def makedirs_p(self, mode=o777):
+    def makedirs_p(self, mode=0o777):
         """ Like :meth:`makedirs`, but does not raise an exception if the
         directory already exists. """
         try:
@@ -1261,7 +1226,7 @@ class path(unicode):
         """ Set the access/modified times of this file to the current time.
         Create the file if it does not exist.
         """
-        fd = os.open(self, os.O_WRONLY | os.O_CREAT, o666)
+        fd = os.open(self, os.O_WRONLY | os.O_CREAT, 0o666)
         os.close(fd)
         os.utime(self, None)
         return self
@@ -1399,7 +1364,7 @@ class path(unicode):
 
         For example, to add line numbers to a file::
 
-            p = path(filename)
+            p = Path(filename)
             assert p.isfile()
             with p.in_place() as reader, writer:
                 for number, line in enumerate(reader, 1):
@@ -1464,7 +1429,7 @@ class path(unicode):
                 pass
 
 
-class tempdir(path):
+class tempdir(Path):
     """
     A temporary directory via :func:`tempfile.mkdtemp`, and constructed with the
     same parameters that you can use as a context manager.
@@ -1472,7 +1437,7 @@ class tempdir(path):
     Example:
 
         with tempdir() as d:
-            # do stuff with the path object "d"
+            # do stuff with the Path object "d"
 
         # here the directory is deleted automatically
 
@@ -1482,7 +1447,7 @@ class tempdir(path):
     @ClassProperty
     @classmethod
     def _next_class(cls):
-        return path
+        return Path
 
     def __new__(cls, *args, **kwargs):
         dirname = tempfile.mkdtemp(*args, **kwargs)
@@ -1499,39 +1464,80 @@ class tempdir(path):
             self.rmtree()
 
 
+def _multi_permission_mask(mode):
+    """
+    Support multiple, comma-separated Unix chmod symbolic modes.
+
+    >>> _multi_permission_mask('a=r,u+w')(0) == 0o644
+    True
+    """
+    compose = lambda f, g: lambda *args, **kwargs: g(f(*args, **kwargs))
+    return functools.reduce(compose, map(_permission_mask, mode.split(',')))
+
+
 def _permission_mask(mode):
     """
     Convert a Unix chmod symbolic mode like ``'ugo+rwx'`` to a function
     suitable for applying to a mask to affect that change.
 
     >>> mask = _permission_mask('ugo+rwx')
-    >>> mask(o554) == o777
+    >>> mask(0o554) == 0o777
     True
 
-    >>> _permission_mask('go-x')(o777) == o766
+    >>> _permission_mask('go-x')(0o777) == 0o766
+    True
+
+    >>> _permission_mask('o-x')(0o445) == 0o444
+    True
+
+    >>> _permission_mask('a+x')(0) == 0o111
+    True
+
+    >>> _permission_mask('a=rw')(0o057) == 0o666
+    True
+
+    >>> _permission_mask('u=x')(0o666) == 0o166
+    True
+
+    >>> _permission_mask('g=')(0o157) == 0o107
     True
     """
-    parsed = re.match('(?P<who>[ugo]+)(?P<op>[-+])(?P<what>[rwx]+)$', mode)
+    # parse the symbolic mode
+    parsed = re.match('(?P<who>[ugoa]+)(?P<op>[-+=])(?P<what>[rwx]*)$', mode)
     if not parsed:
         raise ValueError("Unrecognized symbolic mode", mode)
+
+    # generate a mask representing the specified permission
     spec_map = dict(r=4, w=2, x=1)
-    spec = reduce(operator.or_, [spec_map[perm]
-                  for perm in parsed.group('what')])
-    # now apply spec to each in who
+    specs = (spec_map[perm] for perm in parsed.group('what'))
+    spec = functools.reduce(operator.or_, specs, 0)
+
+    # now apply spec to each subject in who
     shift_map = dict(u=6, g=3, o=0)
-    mask = reduce(operator.or_, [spec << shift_map[subj]
-                  for subj in parsed.group('who')])
+    who = parsed.group('who').replace('a', 'ugo')
+    masks = (spec << shift_map[subj] for subj in who)
+    mask = functools.reduce(operator.or_, masks)
 
     op = parsed.group('op')
+
     # if op is -, invert the mask
     if op == '-':
-        mask ^= o777
+        mask ^= 0o777
 
-    op_map = {'+': operator.or_, '-': operator.and_}
+    # if op is =, retain extant values for unreferenced subjects
+    if op == '=':
+        masks = (0o7 << shift_map[subj] for subj in who)
+        retain = functools.reduce(operator.or_, masks) ^ 0o777
+
+    op_map = {
+        '+': operator.or_,
+        '-': operator.and_,
+        '=': lambda mask, target: target & retain ^ mask,
+    }
     return functools.partial(op_map[op], mask)
 
 
-class CaseInsensitivePattern(unicode):
+class CaseInsensitivePattern(text_type):
     """
     A string with a ``'normcase'`` property, suitable for passing to
     :meth:`listdir`, :meth:`dirs`, :meth:`files`, :meth:`walk`,
@@ -1540,8 +1546,8 @@ class CaseInsensitivePattern(unicode):
     For example, to get all files ending in .py, .Py, .pY, or .PY in the
     current directory::
 
-        from path import path, CaseInsensitivePattern as ci
-        path('.').files(ci('*.py'))
+        from path import Path, CaseInsensitivePattern as ci
+        Path('.').files(ci('*.py'))
     """
 
     @property

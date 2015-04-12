@@ -1,17 +1,15 @@
 #!/usr/bin/env python
 
-from __future__ import with_statement
-
 import re
 import sys
 
-try:
-    import setuptools as impl
-except ImportError:
-    import distutils.core as impl
+import setuptools
 
 with open('README.rst') as ld_file:
     long_description = ld_file.read()
+
+with open('CHANGES.rst') as ld_file:
+    long_description += '\n\n' + ld_file.read()
 
 # match the version indicated in path.py
 with open('path.py') as path_mod:
@@ -20,6 +18,7 @@ with open('path.py') as path_mod:
     version = pattern.search(source).group('version')
 
 sphinx_req = ['sphinx'] if 'build_sphinx' in sys.argv else []
+ptr_req = ['pytest-runner'] if 'ptr' in sys.argv else []
 
 setup_params = dict(
     name="path.py",
@@ -39,15 +38,15 @@ setup_params = dict(
         'Intended Audience :: Developers',
         'Operating System :: OS Independent',
         'Programming Language :: Python',
-        'Programming Language :: Python :: 2.5',
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
         'Topic :: Software Development :: Libraries :: Python Modules'
     ],
-    setup_requires=sphinx_req,
+    setup_requires=sphinx_req + ptr_req,
+    tests_require=['pytest'],
 )
 
 
 if __name__ == '__main__':
-    impl.setup(**setup_params)
+    setuptools.setup(**setup_params)

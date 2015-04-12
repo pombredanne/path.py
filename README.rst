@@ -3,10 +3,12 @@ path.py
 
 ``path.py`` implements a path objects as first-class entities, allowing
 common operations on files to be invoked on those path objects directly. For
-example::
+example:
 
-    from path import path
-    d = path('/home/guido/bin')
+.. code-block:: python
+
+    from path import Path
+    d = Path('/home/guido/bin')
     for f in d.files('*.py'):
         f.chmod(0755)
 
@@ -26,7 +28,7 @@ Installing
 
 Path.py may be installed using ``setuptools``, ``distribute``, or ``pip``::
 
-    easy_install path.py
+    pip install path.py
 
 The latest release is always updated to the `Python Package Index
 <http://pypi.python.org/pypi/path.py>`_.
@@ -42,7 +44,7 @@ download a snapshot of the latest code. Alternatively, if you have git
 installed, you may be able to use ``pip`` or ``easy_install`` to install directly from
 the repository::
 
-    easy_install git+https://github.com/jaraco/path.py.git
+    pip install git+https://github.com/jaraco/path.py.git
 
 Testing
 =======
