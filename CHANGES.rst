@@ -1,5 +1,103 @@
-Changes
-=======
+8.2.1
+-----
+
+- #112: Update Travis CI usage to only deploy on Python 3.5.
+
+8.2
+---
+
+- Refreshed project metadata based on `jaraco's project
+  skeleton <https://github.com/jaraco/skeleton/tree/spaces>_.
+- Releases are now automatically published via Travis-CI.
+- #111: More aggressively trap errors when importing
+  ``pkg_resources``.
+
+8.1.2
+-----
+
+- #105: By using unicode literals, avoid errors rendering the
+  backslash in __get_owner_windows.
+
+8.1.1
+-----
+
+Reluctantly restored reference to path.path in ``__all__``.
+
+8.1
+---
+
+Restored ``path.path`` with a DeprecationWarning.
+
+8.0
+---
+
+Removed ``path.path``. Clients must now refer to the canonical
+name, ``path.Path`` as introduced in 6.2.
+
+7.7
+---
+
+- #88: Added support for resolving certain directories on a
+  system to platform-friendly locations using the `appdirs
+  <https://pypi.python.org/pypi/appdirs/1.4.0>`_ library. The
+  ``Path.special`` method returns an ``SpecialResolver`` instance
+  that will resolve a path in a scope
+  (i.e. 'site' or 'user') and class (i.e. 'config', 'cache',
+  'data'). For
+  example, to create a config directory for "My App"::
+
+      config_dir = Path.special("My App").user.config.makedirs_p()
+
+  ``config_dir`` will exist in a user context and will be in a
+  suitable platform-friendly location.
+
+  As ``path.py`` does not currently have any dependencies, and
+  to retain that expectation for a compatible upgrade path,
+  ``appdirs`` must be installed to avoid an ImportError when
+  invoking ``special``.
+
+
+- #88: In order to support "multipath" results, where multiple
+  paths are returned in a single, ``os.pathsep``-separated
+  string, a new class MultiPath now represents those special
+  results. This functionality is experimental and may change.
+  Feedback is invited.
+
+7.6.2
+-----
+
+- Re-release of 7.6.1 without unintended feature.
+
+7.6.1
+-----
+
+- #101: Supress error when `path.py` is not present as a distribution.
+
+7.6
+---
+
+- Pull Request #100: Add ``merge_tree`` method for merging
+  two existing directory trees.
+- Uses `setuptools_scm <https://github.org/pypa/setuptools_scm>`_
+  for version management.
+
+7.5
+---
+
+- #97: ``__rdiv__`` and ``__rtruediv__`` are now defined.
+
+7.4
+---
+
+- #93: chown now appears in docs and raises NotImplementedError if
+  ``os.chown`` isn't present.
+- #92: Added compatibility support for ``.samefile`` on platforms without
+  ``os.samefile``.
+
+7.3
+---
+
+ - #91: Releases now include a universal wheel.
 
 7.2
 ---
