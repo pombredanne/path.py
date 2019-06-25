@@ -1,25 +1,3 @@
-#
-# Copyright (c) 2010 Mikhail Gusarov
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-#
-
 """
 path.py - An object representing a path to a file or directory.
 
@@ -29,11 +7,19 @@ Example::
 
     from path import Path
     d = Path('/home/guido/bin')
+
+    # Globbing
     for f in d.files('*.py'):
         f.chmod(0o755)
-"""
 
-from __future__ import unicode_literals
+    # Changing the working directory:
+    with Path("somewhere"):
+        # cwd in now `somewhere`
+        ...
+
+    # Concatenate paths with /
+    foo_txt = Path("bar") / "foo.txt"
+"""
 
 import sys
 import warnings
@@ -41,7 +27,6 @@ import os
 import fnmatch
 import glob
 import shutil
-import codecs
 import hashlib
 import errno
 import tempfile
@@ -50,8 +35,8 @@ import operator
 import re
 import contextlib
 import io
-from distutils import dir_util
 import importlib
+import itertools
 
 try:
     import win32security
@@ -68,46 +53,10 @@ try:
 except ImportError:
     pass
 
-##############################################################################
-# Python 2/3 support
-PY3 = sys.version_info >= (3,)
-PY2 = not PY3
+from . import matchers
 
-string_types = str,
-text_type = str
-getcwdu = os.getcwd
 
-def surrogate_escape(error):
-    """
-    Simulate the Python 3 ``surrogateescape`` handler, but for Python 2 only.
-    """
-    chars = error.object[error.start:error.end]
-    assert len(chars) == 1
-    val = ord(chars)
-    val += 0xdc00
-    return __builtin__.unichr(val), error.end
-
-if PY2:
-    import __builtin__
-    string_types = __builtin__.basestring,
-    text_type = __builtin__.unicode
-    getcwdu = os.getcwdu
-    codecs.register_error('surrogateescape', surrogate_escape)
-
-@contextlib.contextmanager
-def io_error_compat():
-    try:
-        yield
-    except IOError as io_err:
-        # On Python 2, io.open raises IOError; transform to OSError for
-        # future compatibility.
-        os_err = OSError(*io_err.args)
-        os_err.filename = getattr(io_err, 'filename', None)
-        raise os_err
-
-##############################################################################
-
-__all__ = ['Path', 'CaseInsensitivePattern']
+__all__ = ['Path', 'TempDir', 'CaseInsensitivePattern']
 
 
 LINESEPS = ['\r\n', '\r', '\n']
@@ -119,8 +68,8 @@ U_NL_END = re.compile(r'(?:{0})$'.format(U_NEWLINE.pattern))
 
 
 try:
-    import pkg_resources
-    __version__ = pkg_resources.require('path.py')[0].version
+    import importlib_metadata
+    __version__ = importlib_metadata.version('path.py')
 except Exception:
     __version__ = 'unknown'
 
@@ -131,7 +80,7 @@ class TreeWalkWarning(Warning):
 
 # from jaraco.functools
 def compose(*funcs):
-    compose_two = lambda f1, f2: lambda *args, **kwargs: f1(f2(*args, **kwargs))
+    compose_two = lambda f1, f2: lambda *args, **kwargs: f1(f2(*args, **kwargs))  # noqa
     return functools.reduce(compose_two, funcs)
 
 
@@ -170,7 +119,7 @@ class multimethod(object):
         )
 
 
-class Path(text_type):
+class Path(str):
     """
     Represents a filesystem path.
 
@@ -200,8 +149,6 @@ class Path(text_type):
     @simple_cache
     def using_module(cls, module):
         subclass_name = cls.__name__ + '_' + module.__name__
-        if PY2:
-            subclass_name = str(subclass_name)
         bases = (cls,)
         ns = {'module': module}
         return type(subclass_name, bases, ns)
@@ -213,16 +160,6 @@ class Path(text_type):
         What class should be used to construct new instances from this class
         """
         return cls
-
-    @classmethod
-    def _always_unicode(cls, path):
-        """
-        Ensure the path as retrieved from a Python API, such as :func:`os.listdir`,
-        is a proper Unicode string.
-        """
-        if PY3 or isinstance(path, text_type):
-            return path
-        return path.decode(sys.getfilesystemencoding(), 'surrogateescape')
 
     # --- Special Python methods.
 
@@ -237,7 +174,7 @@ class Path(text_type):
             return NotImplemented
 
     def __radd__(self, other):
-        if not isinstance(other, string_types):
+        if not isinstance(other, str):
             return NotImplemented
         return self._next_class(other.__add__(self))
 
@@ -277,13 +214,16 @@ class Path(text_type):
     def __exit__(self, *_):
         os.chdir(self._old_dir)
 
+    def __fspath__(self):
+        return self
+
     @classmethod
     def getcwd(cls):
         """ Return the current working directory as a path object.
 
         .. seealso:: :func:`os.getcwdu`
         """
-        return cls(getcwdu())
+        return cls(os.getcwd())
 
     #
     # --- Operations on Path strings.
@@ -330,22 +270,44 @@ class Path(text_type):
         return self.expandvars().expanduser().normpath()
 
     @property
-    def namebase(self):
+    def stem(self):
         """ The same as :meth:`name`, but with one file extension stripped off.
 
-        For example,
-        ``Path('/home/guido/python.tar.gz').name == 'python.tar.gz'``,
-        but
-        ``Path('/home/guido/python.tar.gz').namebase == 'python.tar'``.
+        >>> Path('/home/guido/python.tar.gz').stem
+        'python.tar'
         """
         base, ext = self.module.splitext(self.name)
         return base
+
+    @property
+    def namebase(self):
+        warnings.warn("Use .stem instead of .namebase", DeprecationWarning)
+        return self.stem
 
     @property
     def ext(self):
         """ The file extension, for example ``'.py'``. """
         f, ext = self.module.splitext(self)
         return ext
+
+    def with_suffix(self, suffix):
+        """ Return a new path with the file suffix changed (or added, if none)
+
+        >>> Path('/home/guido/python.tar.gz').with_suffix(".foo")
+        Path('/home/guido/python.tar.foo')
+
+        >>> Path('python').with_suffix('.zip')
+        Path('python.zip')
+
+        >>> Path('filename.ext').with_suffix('zip')
+        Traceback (most recent call last):
+        ...
+        ValueError: Invalid suffix 'zip'
+        """
+        if not suffix.startswith('.'):
+            raise ValueError("Invalid suffix {suffix!r}".format(**locals()))
+
+        return self.stripext() + suffix
 
     @property
     def drive(self):
@@ -437,8 +399,9 @@ class Path(text_type):
     @multimethod
     def joinpath(cls, first, *others):
         """
-        Join first to zero or more :class:`Path` components, adding a separator
-        character (:samp:`{first}.module.sep`) if needed.  Returns a new instance of
+        Join first to zero or more :class:`Path` components,
+        adding a separator character (:samp:`{first}.module.sep`)
+        if needed.  Returns a new instance of
         :samp:`{first}._next_class`.
 
         .. seealso:: :func:`os.path.join`
@@ -516,7 +479,7 @@ class Path(text_type):
 
     # --- Listing, searching, walking, and matching
 
-    def listdir(self, pattern=None):
+    def listdir(self, match=None):
         """ D.listdir() -> List of items in this directory.
 
         Use :meth:`files` or :meth:`dirs` instead if you want a listing
@@ -524,46 +487,39 @@ class Path(text_type):
 
         The elements of the list are Path objects.
 
-        With the optional `pattern` argument, this only lists
-        items whose names match the given pattern.
+        With the optional `match` argument, a callable,
+        only return items whose names match the given pattern.
 
         .. seealso:: :meth:`files`, :meth:`dirs`
         """
-        if pattern is None:
-            pattern = '*'
-        return [
-            self / child
-            for child in map(self._always_unicode, os.listdir(self))
-            if self._next_class(child).fnmatch(pattern)
-        ]
+        match = matchers.load(match)
+        return list(filter(match, (
+            self / child for child in os.listdir(self)
+        )))
 
-    def dirs(self, pattern=None):
+    def dirs(self, *args, **kwargs):
         """ D.dirs() -> List of this directory's subdirectories.
 
         The elements of the list are Path objects.
         This does not walk recursively into subdirectories
         (but see :meth:`walkdirs`).
 
-        With the optional `pattern` argument, this only lists
-        directories whose names match the given pattern.  For
-        example, ``d.dirs('build-*')``.
+        Accepts parameters to :meth:`listdir`.
         """
-        return [p for p in self.listdir(pattern) if p.isdir()]
+        return [p for p in self.listdir(*args, **kwargs) if p.isdir()]
 
-    def files(self, pattern=None):
+    def files(self, *args, **kwargs):
         """ D.files() -> List of the files in this directory.
 
         The elements of the list are Path objects.
         This does not walk into subdirectories (see :meth:`walkfiles`).
 
-        With the optional `pattern` argument, this only lists files
-        whose names match the given pattern.  For example,
-        ``d.files('*.pyc')``.
+        Accepts parameters to :meth:`listdir`.
         """
 
-        return [p for p in self.listdir(pattern) if p.isfile()]
+        return [p for p in self.listdir(*args, **kwargs) if p.isfile()]
 
-    def walk(self, pattern=None, errors='strict'):
+    def walk(self, match=None, errors='strict'):
         """ D.walk() -> iterator over files and subdirs, recursively.
 
         The iterator yields Path objects naming each child item of
@@ -593,6 +549,8 @@ class Path(text_type):
             raise ValueError("invalid errors parameter")
         errors = vars(Handlers).get(errors, errors)
 
+        match = matchers.load(match)
+
         try:
             childList = self.listdir()
         except Exception:
@@ -603,7 +561,7 @@ class Path(text_type):
             return
 
         for child in childList:
-            if pattern is None or child.fnmatch(pattern):
+            if match(child):
                 yield child
             try:
                 isdir = child.isdir()
@@ -615,92 +573,26 @@ class Path(text_type):
                 isdir = False
 
             if isdir:
-                for item in child.walk(pattern, errors):
+                for item in child.walk(errors=errors, match=match):
                     yield item
 
-    def walkdirs(self, pattern=None, errors='strict'):
+    def walkdirs(self, *args, **kwargs):
         """ D.walkdirs() -> iterator over subdirs, recursively.
-
-        With the optional `pattern` argument, this yields only
-        directories whose names match the given pattern.  For
-        example, ``mydir.walkdirs('*test')`` yields only directories
-        with names ending in ``'test'``.
-
-        The `errors=` keyword argument controls behavior when an
-        error occurs.  The default is ``'strict'``, which causes an
-        exception.  The other allowed values are ``'warn'`` (which
-        reports the error via :func:`warnings.warn()`), and ``'ignore'``.
         """
-        if errors not in ('strict', 'warn', 'ignore'):
-            raise ValueError("invalid errors parameter")
+        return (
+            item
+            for item in self.walk(*args, **kwargs)
+            if item.isdir()
+        )
 
-        try:
-            dirs = self.dirs()
-        except Exception:
-            if errors == 'ignore':
-                return
-            elif errors == 'warn':
-                warnings.warn(
-                    "Unable to list directory '%s': %s"
-                    % (self, sys.exc_info()[1]),
-                    TreeWalkWarning)
-                return
-            else:
-                raise
-
-        for child in dirs:
-            if pattern is None or child.fnmatch(pattern):
-                yield child
-            for subsubdir in child.walkdirs(pattern, errors):
-                yield subsubdir
-
-    def walkfiles(self, pattern=None, errors='strict'):
+    def walkfiles(self, *args, **kwargs):
         """ D.walkfiles() -> iterator over files in D, recursively.
-
-        The optional argument `pattern` limits the results to files
-        with names that match the pattern.  For example,
-        ``mydir.walkfiles('*.tmp')`` yields only files with the ``.tmp``
-        extension.
         """
-        if errors not in ('strict', 'warn', 'ignore'):
-            raise ValueError("invalid errors parameter")
-
-        try:
-            childList = self.listdir()
-        except Exception:
-            if errors == 'ignore':
-                return
-            elif errors == 'warn':
-                warnings.warn(
-                    "Unable to list directory '%s': %s"
-                    % (self, sys.exc_info()[1]),
-                    TreeWalkWarning)
-                return
-            else:
-                raise
-
-        for child in childList:
-            try:
-                isfile = child.isfile()
-                isdir = not isfile and child.isdir()
-            except:
-                if errors == 'ignore':
-                    continue
-                elif errors == 'warn':
-                    warnings.warn(
-                        "Unable to access '%s': %s"
-                        % (self, sys.exc_info()[1]),
-                        TreeWalkWarning)
-                    continue
-                else:
-                    raise
-
-            if isfile:
-                if pattern is None or child.fnmatch(pattern):
-                    yield child
-            elif isdir:
-                for f in child.walkfiles(pattern, errors):
-                    yield f
+        return (
+            item
+            for item in self.walk(*args, **kwargs)
+            if item.isfile()
+        )
 
     def fnmatch(self, pattern, normcase=None):
         """ Return ``True`` if `self.name` matches the given `pattern`.
@@ -710,8 +602,8 @@ class Path(text_type):
             attribute, it is applied to the name and path prior to comparison.
 
         `normcase` - (optional) A function used to normalize the pattern and
-            filename before matching. Defaults to :meth:`self.module`, which defaults
-            to :meth:`os.path.normcase`.
+            filename before matching. Defaults to :meth:`self.module`, which
+            defaults to :meth:`os.path.normcase`.
 
         .. seealso:: :func:`fnmatch.fnmatch`
         """
@@ -730,9 +622,31 @@ class Path(text_type):
         of all the files users have in their :file:`bin` directories.
 
         .. seealso:: :func:`glob.glob`
+
+        .. note:: Glob is **not** recursive, even when using ``**``.
+                  To do recursive globbing see :func:`walk`,
+                  :func:`walkdirs` or :func:`walkfiles`.
         """
         cls = self._next_class
         return [cls(s) for s in glob.glob(self / pattern)]
+
+    def iglob(self, pattern):
+        """ Return an iterator of Path objects that match the pattern.
+
+        `pattern` - a path relative to this directory, with wildcards.
+
+        For example, ``Path('/users').iglob('*/bin/*')`` returns an
+        iterator of all the files users have in their :file:`bin`
+        directories.
+
+        .. seealso:: :func:`glob.iglob`
+
+        .. note:: Glob is **not** recursive, even when using ``**``.
+                  To do recursive globbing see :func:`walk`,
+                  :func:`walkdirs` or :func:`walkfiles`.
+        """
+        cls = self._next_class
+        return (cls(s) for s in glob.iglob(self / pattern))
 
     #
     # --- Reading or writing an entire file at once.
@@ -743,8 +657,7 @@ class Path(text_type):
         Keyword arguments work as in :func:`io.open`.  If the file cannot be
         opened, an :class:`~exceptions.OSError` is raised.
         """
-        with io_error_compat():
-            return io.open(self, *args, **kwargs)
+        return io.open(self, *args, **kwargs)
 
     def bytes(self):
         """ Open this file, read all bytes, return them as a string. """
@@ -760,7 +673,7 @@ class Path(text_type):
            :example:
 
                >>> hash = hashlib.md5()
-               >>> for chunk in Path("path.py").chunks(8192, mode='rb'):
+               >>> for chunk in Path("CHANGES.rst").chunks(8192, mode='rb'):
                ...     hash.update(chunk)
 
             This will read the file by chunks of 8192 bytes.
@@ -858,7 +771,7 @@ class Path(text_type):
         conversion.
 
         """
-        if isinstance(text, text_type):
+        if isinstance(text, str):
             if linesep is not None:
                 text = U_NEWLINE.sub(linesep, text)
             text = text.encode(encoding or sys.getdefaultencoding(), errors)
@@ -882,15 +795,9 @@ class Path(text_type):
                 translated to ``'\n'``.  If ``False``, newline characters are
                 stripped off.  Default is ``True``.
 
-        This uses ``'U'`` mode.
-
         .. seealso:: :meth:`text`
         """
-        if encoding is None and retain:
-            with self.open('U') as f:
-                return f.readlines()
-        else:
-            return self.text(encoding, errors).splitlines(retain)
+        return self.text(encoding, errors).splitlines(retain)
 
     def write_lines(self, lines, encoding=None, errors='strict',
                     linesep=os.linesep, append=False):
@@ -931,14 +838,15 @@ class Path(text_type):
             to read the file later.
         """
         with self.open('ab' if append else 'wb') as f:
-            for l in lines:
-                isUnicode = isinstance(l, text_type)
+            for line in lines:
+                isUnicode = isinstance(line, str)
                 if linesep is not None:
                     pattern = U_NL_END if isUnicode else NL_END
-                    l = pattern.sub('', l) + linesep
+                    line = pattern.sub('', line) + linesep
                 if isUnicode:
-                    l = l.encode(encoding or sys.getdefaultencoding(), errors)
-                f.write(l)
+                    line = line.encode(
+                        encoding or sys.getdefaultencoding(), errors)
+                f.write(line)
 
     def read_md5(self):
         """ Calculate the md5 hash for this file.
@@ -952,8 +860,8 @@ class Path(text_type):
     def _hash(self, hash_name):
         """ Returns a hash object for the file at the current path.
 
-            `hash_name` should be a hash algo name (such as ``'md5'`` or ``'sha1'``)
-            that's available in the :mod:`hashlib` module.
+        `hash_name` should be a hash algo name (such as ``'md5'``
+        or ``'sha1'``) that's available in the :mod:`hashlib` module.
         """
         m = hashlib.new(hash_name)
         for chunk in self.chunks(8192, mode="rb"):
@@ -1157,7 +1065,7 @@ class Path(text_type):
 
         .. seealso:: :func:`os.chmod`
         """
-        if isinstance(mode, string_types):
+        if isinstance(mode, str):
             mask = _multi_permission_mask(mode)
             mode = mask(self.stat().st_mode)
         os.chmod(self, mode)
@@ -1170,13 +1078,14 @@ class Path(text_type):
         .. seealso:: :func:`os.chown`
         """
         if hasattr(os, 'chown'):
-            if 'pwd' in globals() and isinstance(uid, string_types):
+            if 'pwd' in globals() and isinstance(uid, str):
                 uid = pwd.getpwnam(uid).pw_uid
-            if 'grp' in globals() and isinstance(gid, string_types):
+            if 'grp' in globals() and isinstance(gid, str):
                 gid = grp.getgrnam(gid).gr_gid
             os.chown(self, uid, gid)
         else:
-            raise NotImplementedError("Ownership not available on this platform.")
+            msg = "Ownership not available on this platform."
+            raise NotImplementedError(msg)
         return self
 
     def rename(self, new):
@@ -1200,12 +1109,8 @@ class Path(text_type):
     def mkdir_p(self, mode=0o777):
         """ Like :meth:`mkdir`, but does not raise an exception if the
         directory already exists. """
-        try:
+        with contextlib.suppress(FileExistsError):
             self.mkdir(mode)
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.EEXIST:
-                raise
         return self
 
     def makedirs(self, mode=0o777):
@@ -1216,12 +1121,8 @@ class Path(text_type):
     def makedirs_p(self, mode=0o777):
         """ Like :meth:`makedirs`, but does not raise an exception if the
         directory already exists. """
-        try:
+        with contextlib.suppress(FileExistsError):
             self.makedirs(mode)
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.EEXIST:
-                raise
         return self
 
     def rmdir(self):
@@ -1232,12 +1133,10 @@ class Path(text_type):
     def rmdir_p(self):
         """ Like :meth:`rmdir`, but does not raise an exception if the
         directory is not empty or does not exist. """
-        try:
-            self.rmdir()
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.ENOTEMPTY and e.errno != errno.EEXIST:
-                raise
+        suppressed = FileNotFoundError, FileExistsError, DirectoryNotEmpty
+        with contextlib.suppress(suppressed):
+            with DirectoryNotEmpty.translate():
+                self.rmdir()
         return self
 
     def removedirs(self):
@@ -1248,12 +1147,9 @@ class Path(text_type):
     def removedirs_p(self):
         """ Like :meth:`removedirs`, but does not raise an exception if the
         directory is not empty or does not exist. """
-        try:
-            self.removedirs()
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.ENOTEMPTY and e.errno != errno.EEXIST:
-                raise
+        with contextlib.suppress(FileExistsError, DirectoryNotEmpty):
+            with DirectoryNotEmpty.translate():
+                self.removedirs()
         return self
 
     # --- Modifying operations on files
@@ -1275,12 +1171,8 @@ class Path(text_type):
     def remove_p(self):
         """ Like :meth:`remove`, but does not raise an exception if the
         file does not exist. """
-        try:
+        with contextlib.suppress(FileNotFoundError):
             self.unlink()
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.ENOENT:
-                raise
         return self
 
     def unlink(self):
@@ -1306,11 +1198,16 @@ class Path(text_type):
             return self._next_class(newpath)
 
     if hasattr(os, 'symlink'):
-        def symlink(self, newlink):
+        def symlink(self, newlink=None):
             """ Create a symbolic link at `newlink`, pointing here.
+
+            If newlink is not supplied, the symbolic link will assume
+            the name self.basename(), creating the link in the cwd.
 
             .. seealso:: :func:`os.symlink`
             """
+            if newlink is None:
+                newlink = self.basename()
             os.symlink(self, newlink)
             return self._next_class(newlink)
 
@@ -1354,12 +1251,8 @@ class Path(text_type):
     def rmtree_p(self):
         """ Like :meth:`rmtree`, but does not raise an exception if the
         directory does not exist. """
-        try:
+        with contextlib.suppress(FileNotFoundError):
             self.rmtree()
-        except OSError:
-            _, e, _ = sys.exc_info()
-            if e.errno != errno.ENOENT:
-                raise
         return self
 
     def chdir(self):
@@ -1368,30 +1261,60 @@ class Path(text_type):
 
     cd = chdir
 
-    def merge_tree(self, dst, symlinks=False, *args, **kwargs):
+    def merge_tree(
+            self, dst, symlinks=False,
+            *,
+            update=False,
+            copy_function=shutil.copy2,
+            ignore=lambda dir, contents: []):
         """
         Copy entire contents of self to dst, overwriting existing
         contents in dst with those in self.
 
-        If the additional keyword `update` is True, each
-        `src` will only be copied if `dst` does not exist,
-        or `src` is newer than `dst`.
+        Pass ``symlinks=True`` to copy symbolic links as links.
 
-        Note that the technique employed stages the files in a temporary
-        directory first, so this function is not suitable for merging
-        trees with large files, especially if the temporary directory
-        is not capable of storing a copy of the entire source tree.
+        Accepts a ``copy_function``, similar to copytree.
+
+        To avoid overwriting newer files, supply a copy function
+        wrapped in ``only_newer``. For example::
+
+            src.merge_tree(dst, copy_function=only_newer(shutil.copy2))
         """
-        update = kwargs.pop('update', False)
-        with tempdir() as _temp_dir:
-            # first copy the tree to a stage directory to support
-            #  the parameters and behavior of copytree.
-            stage = _temp_dir / str(hash(self))
-            self.copytree(stage, symlinks, *args, **kwargs)
-            # now copy everything from the stage directory using
-            #  the semantics of dir_util.copy_tree
-            dir_util.copy_tree(stage, dst, preserve_symlinks=symlinks,
-                update=update)
+        dst = self._next_class(dst)
+        dst.makedirs_p()
+
+        if update:
+            warnings.warn(
+                "Update is deprecated; "
+                "use copy_function=only_newer(shutil.copy2)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            copy_function = only_newer(copy_function)
+
+        sources = self.listdir()
+        _ignored = ignore(self, [item.name for item in sources])
+
+        def ignored(item):
+            return item.name in _ignored
+
+        for source in itertools.filterfalse(ignored, sources):
+            dest = dst / source.name
+            if symlinks and source.islink():
+                target = source.readlink()
+                target.symlink(dest)
+            elif source.isdir():
+                source.merge_tree(
+                    dest,
+                    symlinks=symlinks,
+                    update=update,
+                    copy_function=copy_function,
+                    ignore=ignore,
+                )
+            else:
+                copy_function(source, dest)
+
+        self.copystat(dst)
 
     #
     # --- Special stuff from os
@@ -1410,19 +1333,23 @@ class Path(text_type):
     # in-place re-writing, courtesy of Martijn Pieters
     # http://www.zopatista.com/python/2013/11/26/inplace-file-rewriting/
     @contextlib.contextmanager
-    def in_place(self, mode='r', buffering=-1, encoding=None, errors=None,
-            newline=None, backup_extension=None):
+    def in_place(
+            self, mode='r', buffering=-1, encoding=None, errors=None,
+            newline=None, backup_extension=None,
+    ):
         """
-        A context in which a file may be re-written in-place with new content.
+        A context in which a file may be re-written in-place with
+        new content.
 
-        Yields a tuple of :samp:`({readable}, {writable})` file objects, where `writable`
-        replaces `readable`.
+        Yields a tuple of :samp:`({readable}, {writable})` file
+        objects, where `writable` replaces `readable`.
 
         If an exception occurs, the old file is restored, removing the
         written data.
 
-        Mode *must not* use ``'w'``, ``'a'``, or ``'+'``; only read-only-modes are
-        allowed. A :exc:`ValueError` is raised on invalid modes.
+        Mode *must not* use ``'w'``, ``'a'``, or ``'+'``; only
+        read-only-modes are allowed. A :exc:`ValueError` is raised
+        on invalid modes.
 
         For example, to add line numbers to a file::
 
@@ -1448,22 +1375,28 @@ class Path(text_type):
         except os.error:
             pass
         os.rename(self, backup_fn)
-        readable = io.open(backup_fn, mode, buffering=buffering,
-            encoding=encoding, errors=errors, newline=newline)
+        readable = io.open(
+            backup_fn, mode, buffering=buffering,
+            encoding=encoding, errors=errors, newline=newline,
+        )
         try:
             perm = os.fstat(readable.fileno()).st_mode
         except OSError:
-            writable = open(self, 'w' + mode.replace('r', ''),
+            writable = open(
+                self, 'w' + mode.replace('r', ''),
                 buffering=buffering, encoding=encoding, errors=errors,
-                newline=newline)
+                newline=newline,
+            )
         else:
             os_mode = os.O_CREAT | os.O_WRONLY | os.O_TRUNC
             if hasattr(os, 'O_BINARY'):
                 os_mode |= os.O_BINARY
             fd = os.open(self, os_mode, perm)
-            writable = io.open(fd, "w" + mode.replace('r', ''),
+            writable = io.open(
+                fd, "w" + mode.replace('r', ''),
                 buffering=buffering, encoding=encoding, errors=errors,
-                newline=newline)
+                newline=newline,
+            )
             try:
                 if hasattr(os, 'chmod'):
                     os.chmod(self, perm)
@@ -1516,6 +1449,36 @@ class Path(text_type):
         return functools.partial(SpecialResolver, cls)
 
 
+class DirectoryNotEmpty(OSError):
+    @staticmethod
+    @contextlib.contextmanager
+    def translate():
+        try:
+            yield
+        except OSError:
+            _, e, _ = sys.exc_info()
+            if e.errno == errno.ENOTEMPTY:
+                e.__class__ = DirectoryNotEmpty
+            raise
+
+
+def only_newer(copy_func):
+    """
+    Wrap a copy function (like shutil.copy2) to return
+    the dst if it's newer than the source.
+    """
+    @functools.wraps(copy_func)
+    def wrapper(src, dst, *args, **kwargs):
+        is_newer_dst = (
+            dst.exists()
+            and dst.getmtime() >= src.getmtime()
+        )
+        if is_newer_dst:
+            return dst
+        return copy_func(src, dst, *args, **kwargs)
+    return wrapper
+
+
 class SpecialResolver(object):
     class ResolverScope:
         def __init__(self, paths, scope):
@@ -1558,8 +1521,6 @@ class Multi:
     @classmethod
     def for_class(cls, path_cls):
         name = 'Multi' + path_cls.__name__
-        if PY2:
-            name = str(name)
         return type(name, (cls, path_cls), {})
 
     @classmethod
@@ -1584,14 +1545,15 @@ class Multi:
         )
 
 
-class tempdir(Path):
+class TempDir(Path):
     """
-    A temporary directory via :func:`tempfile.mkdtemp`, and constructed with the
-    same parameters that you can use as a context manager.
+    A temporary directory via :func:`tempfile.mkdtemp`, and
+    constructed with the same parameters that you can use
+    as a context manager.
 
-    Example:
+    Example::
 
-        with tempdir() as d:
+        with TempDir() as d:
             # do stuff with the Path object "d"
 
         # here the directory is deleted automatically
@@ -1606,17 +1568,25 @@ class tempdir(Path):
 
     def __new__(cls, *args, **kwargs):
         dirname = tempfile.mkdtemp(*args, **kwargs)
-        return super(tempdir, cls).__new__(cls, dirname)
+        return super(TempDir, cls).__new__(cls, dirname)
 
     def __init__(self, *args, **kwargs):
         pass
 
     def __enter__(self):
-        return self
+        # TempDir should return a Path version of itself and not itself
+        # so that a second context manager does not create a second
+        # temporary directory, but rather changes CWD to the location
+        # of the temporary directory.
+        return self._next_class(self)
 
     def __exit__(self, exc_type, exc_value, traceback):
         if not exc_value:
             self.rmtree()
+
+
+# For backwards compatibility.
+tempdir = TempDir
 
 
 def _multi_permission_mask(mode):
@@ -1626,7 +1596,8 @@ def _multi_permission_mask(mode):
     >>> _multi_permission_mask('a=r,u+w')(0) == 0o644
     True
     """
-    compose = lambda f, g: lambda *args, **kwargs: g(f(*args, **kwargs))
+    def compose(f, g):
+        return lambda *args, **kwargs: g(f(*args, **kwargs))
     return functools.reduce(compose, map(_permission_mask, mode.split(',')))
 
 
@@ -1692,31 +1663,21 @@ def _permission_mask(mode):
     return functools.partial(op_map[op], mask)
 
 
-class CaseInsensitivePattern(text_type):
-    """
-    A string with a ``'normcase'`` property, suitable for passing to
-    :meth:`listdir`, :meth:`dirs`, :meth:`files`, :meth:`walk`,
-    :meth:`walkdirs`, or :meth:`walkfiles` to match case-insensitive.
-
-    For example, to get all files ending in .py, .Py, .pY, or .PY in the
-    current directory::
-
-        from path import Path, CaseInsensitivePattern as ci
-        Path('.').files(ci('*.py'))
-    """
-
-    @property
-    def normcase(self):
-        return __import__('ntpath').normcase
-
-########################
-# Backward-compatibility
-class path(Path):
-    def __new__(cls, *args, **kwargs):
-        msg = "path is deprecated. Use Path instead."
-        warnings.warn(msg, DeprecationWarning)
-        return Path.__new__(cls, *args, **kwargs)
+class CaseInsensitivePattern(matchers.CaseInsensitive):
+    def __init__(self, value):
+        warnings.warn(
+            "Use matchers.CaseInsensitive instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super(CaseInsensitivePattern, self).__init__(value)
 
 
-__all__ += ['path']
-########################
+class FastPath(Path):
+    def __init__(self, *args, **kwargs):
+        warnings.warn(
+            "Use Path, as FastPath no longer holds any advantage",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super(FastPath, self).__init__(*args, **kwargs)

@@ -1,3 +1,181 @@
+12.0.1
+------
+
+- #166: Removed 'universal' wheel support.
+
+12.0
+---
+
+- #148: Dropped support for Python 2.7 and 3.4.
+- Moved 'path' into a package.
+
+11.5.2
+------
+
+- #163: Corrected 'pymodules' typo in package declaration.
+
+11.5.1
+------
+
+- Minor packaging refresh.
+
+11.5.0
+------
+
+- #156: Re-wrote the handling of pattern matches for
+  ``listdir``, ``walk``, and related methods, allowing
+  the pattern to be a more complex object. This approach
+  drastically simplifies the code and obviates the
+  ``CaseInsensitivePattern`` and ``FastPath`` classes.
+  Now the main ``Path`` class should be as performant
+  as ``FastPath`` and case-insensitive matches can be
+  readily constructed using the new
+  ``path.matchers.CaseInsensitive`` class.
+
+11.4.1
+------
+
+- #153: Skip intermittently failing performance test on
+  Python 2.
+
+11.4.0
+------
+
+- #130: Path.py now supports non-decodable filenames on
+  Linux and Python 2, leveraging the
+  `backports.os <https://pypi.org/project/backports.os>`_
+  package (as an optional dependency). Currently, only
+  ``listdir`` is patched, but other ``os`` primitives may
+  be patched similarly in the ``patch_for_linux_python2``
+  function.
+
+- #141: For merge_tree, instead of relying on the deprecated
+  distutils module, implement merge_tree explicitly. The
+  ``update`` parameter is deprecated, instead superseded
+  by a ``copy_function`` parameter and an ``only_newer``
+  wrapper for any copy function.
+
+11.3.0
+------
+
+- #151: No longer use two techniques for splitting lines.
+  Instead, unconditionally rely on io.open for universal
+  newlines support and always use splitlines.
+
+11.2.0
+------
+
+- #146: Rely on `importlib_metadata
+  <https://pypi.org/project/importlib_metadata>`_ instead of
+  setuptools/pkg_resources to load the version of the module.
+  Added tests ensuring a <100ms import time for the ``path``
+  module. This change adds an explicit dependency on the
+  importlib_metadata package, but the project still supports
+  copying of the ``path.py`` module without any dependencies.
+
+11.1.0
+------
+
+- #143, #144: Add iglob method.
+- #142, #145: Rename ``tempdir`` to ``TempDir`` and declare
+  it as part of ``__all__``. Retain ``tempdir`` for compatibility
+  for now.
+- #145: ``TempDir.__enter__`` no longer returns the ``TempDir``
+  instance, but instead returns a ``Path`` instance, suitable for
+  entering to change the current working directory.
+
+11.0.1
+------
+
+- #136: Fixed test failures on BSD.
+
+- Refreshed package metadata.
+
+11.0
+----
+
+- Drop support for Python 3.3.
+
+10.6
+----
+
+- Renamed ``namebase`` to ``stem`` to match API of pathlib.
+  Kept ``namebase`` as a deprecated alias for compatibility.
+
+- Added new ``with_suffix`` method, useful for renaming the
+  extension on a Path::
+
+    orig = Path('mydir/mypath.bat')
+    renamed = orig.rename(orig.with_suffix('.cmd'))
+
+10.5
+----
+
+- Packaging refresh and readme updates.
+
+10.4
+----
+
+- #130: Removed surrogate_escape handler as it's no longer
+  used.
+
+10.3.1
+------
+
+- #124: Fixed ``rmdir_p`` raising ``FileNotFoundError`` when
+  directory does not exist on Windows.
+
+10.3
+----
+
+- #115: Added a new performance-optimized implementation
+  for listdir operations, optimizing ``listdir``, ``walk``,
+  ``walkfiles``, ``walkdirs``, and ``fnmatch``, presented
+  as the ``FastPath`` class.
+
+  Please direct feedback on this implementation to the ticket,
+  especially if the performance benefits justify it replacing
+  the default ``Path`` class.
+
+10.2
+----
+
+- Symlink no longer requires the ``newlink`` parameter
+  and will default to the basename of the target in the
+  current working directory.
+
+10.1
+----
+
+- #123: Implement ``Path.__fspath__`` per PEP 519.
+
+10.0
+----
+
+- Once again as in 8.0 remove deprecated ``path.path``.
+
+9.1
+---
+
+- #121: Removed workaround for #61 added in 5.2. ``path.py``
+  now only supports file system paths that can be effectively
+  decoded to text. It is the responsibility of the system
+  implementer to ensure that filenames on the system are
+  decodeable by ``sys.getfilesystemencoding()``.
+
+9.0
+---
+
+- Drop support for Python 2.6 and 3.2 as integration
+  dependencies (pip) no longer support these versions.
+
+8.3
+---
+
+- Merge with latest skeleton, adding badges and test runs by
+  default under tox instead of pytest-runner.
+- Documentation is no longer hosted with PyPI.
+
 8.2.1
 -----
 
@@ -7,7 +185,8 @@
 ---
 
 - Refreshed project metadata based on `jaraco's project
-  skeleton <https://github.com/jaraco/skeleton/tree/spaces>_.
+  skeleton <https://github.com/jaraco/skeleton/tree/spaces>`_.
+
 - Releases are now automatically published via Travis-CI.
 - #111: More aggressively trap errors when importing
   ``pkg_resources``.
@@ -21,12 +200,12 @@
 8.1.1
 -----
 
-Reluctantly restored reference to path.path in ``__all__``.
+- #102: Reluctantly restored reference to path.path in ``__all__``.
 
 8.1
 ---
 
-Restored ``path.path`` with a DeprecationWarning.
+- #102: Restored ``path.path`` with a DeprecationWarning.
 
 8.0
 ---
@@ -76,7 +255,7 @@ name, ``path.Path`` as introduced in 6.2.
 7.6
 ---
 
-- Pull Request #100: Add ``merge_tree`` method for merging
+- #100: Add ``merge_tree`` method for merging
   two existing directory trees.
 - Uses `setuptools_scm <https://github.org/pypa/setuptools_scm>`_
   for version management.
